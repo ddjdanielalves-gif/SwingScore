@@ -35,6 +35,17 @@ export default function SearchBar({ onSelect }: Props) {
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
+  const submit = () => {
+    const q = query.trim();
+    if (!q) return;
+    const upper = q.toUpperCase();
+    const exact = results.find((r) => r.ticker.toUpperCase() === upper);
+    const pick = exact?.ticker ?? results[0]?.ticker ?? upper;
+    onSelect(pick);
+    setOpen(false);
+    setQuery("");
+  };
+
   return (
     <div className="searchbox" ref={boxRef}>
       <input
@@ -44,7 +55,10 @@ export default function SearchBar({ onSelect }: Props) {
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
-        placeholder="Buscar ativo — PETR4, VALE3, BBAS3, AAPL, MSFT..."
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+        }}
+        placeholder="Buscar por ticker ou empresa — PETR4, VALE3, BBAS3, AAPL, Itaú..."
       />
       {open && query.trim() && (
         <div className="search-results">

@@ -91,8 +91,9 @@ function App() {
           <section className="empty">
             <h1>Escolha um ativo para começar</h1>
             <p>
-              Digite um ticker no campo de busca acima. Exemplos: <b>PETR4</b>,{" "}
-              <b>VALE3</b>, <b>BBAS3</b>, <b>AAPL</b>, <b>MSFT</b>.
+              Digite um ticker ou o nome da empresa e pressione Enter. Exemplos:{" "}
+              <b>BBDC4</b>, <b>ITUB3</b>, <b>VALE3</b>, <b>AAPL</b>, <b>Itaú</b>,{" "}
+              <b>Petrobras</b>.
             </p>
           </section>
         )}
