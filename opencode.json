@@ -1,0 +1,78 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "9router": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://localhost:20128/v1",
+        "apiKey": "sk_9router"
+      },
+      "models": {
+        "nvidia/deepseek-ai/deepseek-v4-pro": {
+          "name": "deepseek-v4-pro",
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "nvidia/z-ai/glm-5.2": {
+          "name": "glm-5.2",
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "nvidia/minimaxai/minimax-m3": {
+          "name": "minimax-m3",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "gemini/gemini-3.6-flash": {
+          "name": "gemini-3.6-flash",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "gemini/gemini-3.5-flash-lite": {
+          "name": "gemini-3.5-flash-lite",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "gemini/gemini-3.1-flash-lite-preview": {
+          "name": "gemini-3.1-flash-lite-preview",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "gemini/gemini-3-flash-preview": {
+          "name": "gemini-3-flash-preview",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "gemini/gemma-4-31b-it": {
+          "name": "gemma-4-31b-it",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        }
+      }
+    }
+  },
+  "model": "9router/nvidia/deepseek-ai/deepseek-v4-pro",
+  "agent": {
+    "explorer": {
+      "description": "Fast explorer subagent for codebase exploration",
+      "mode": "subagent",
+      "model": "9router/gemini/gemini-3.5-flash-lite"
+    }
+  }
+}

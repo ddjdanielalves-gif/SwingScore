@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+backend/.venv/
+backend/swing.db
+backend/*.sqlite3
+backend/src/
+
+# Node
+frontend/node_modules/
+
+# Env / secrets
+.env
+backend/.env

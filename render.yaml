@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: swingscore
+    runtime: python
+    plan: free
+    region: saopaulo
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SWING_LLM_ENABLED
+        value: "false"
+      - key: SWING_MOCK_MODE
+        value: "false"
+      - key: SWING_CACHE_TTL_SECONDS
+        value: "3600"
