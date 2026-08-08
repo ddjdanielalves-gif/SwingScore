@@ -6,7 +6,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.staticfiles import StaticFiles
 
 from .config import settings
 from .database import Base, engine
@@ -36,6 +39,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class _CacheControlMiddleware(BaseHTTPMiddleware):
+    """Cache policy: index.html revalidates always; hashed assets are immutable."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        path = request.url.path
+        if path.endswith("/index.html") or path in ("/", ""):
+            response.headers["Cache-Control"] = "no-cache"
+        elif path.startswith("/assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+app.add_middleware(_CacheControlMiddleware)
 
 app.include_router(assets.router)
 app.include_router(history.router)

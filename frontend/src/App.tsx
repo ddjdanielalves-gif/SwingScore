@@ -68,6 +68,12 @@ function App() {
     if (ticker) load(ticker);
   }, [ticker, load]);
 
+  // Wake the server instance on page load so the first analysis does not
+  // compete with a cold start (Render free tier).
+  useEffect(() => {
+    api.health().catch(() => undefined);
+  }, []);
+
   const selectTicker = (t: string) => setTicker(t);
 
   return (
