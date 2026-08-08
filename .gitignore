@@ -5,6 +5,14 @@ backend/.venv/
 backend/swing.db
 backend/*.sqlite3
 backend/src/
+swing.db
+*.sqlite3
+
+# Test artifacts
+bulk_test_results.jsonl
+
+# Scratch / stray copies
+matchscore/
 
 # Node
 frontend/node_modules/

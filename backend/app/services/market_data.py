@@ -10,10 +10,13 @@ access or the provider is blocked, so the product is always demonstrable.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -27,29 +30,6 @@ CACHE: dict[str, tuple[float, dict]] = {}
 CACHE_LOCK = threading.Lock()
 
 CURATED: list[dict] = [
-    {"ticker": "PETR4", "name": "Petrobras PN", "market": "B3"},
-    {"ticker": "VALE3", "name": "Vale ON", "market": "B3"},
-    {"ticker": "BBAS3", "name": "Banco do Brasil ON", "market": "B3"},
-    {"ticker": "ITUB4", "name": "Itaú Unibanco PN", "market": "B3"},
-    {"ticker": "BBDC4", "name": "Bradesco PN", "market": "B3"},
-    {"ticker": "ABEV3", "name": "Ambev ON", "market": "B3"},
-    {"ticker": "WEGE3", "name": "WEG ON", "market": "B3"},
-    {"ticker": "MGLU3", "name": "Magazine Luiza ON", "market": "B3"},
-    {"ticker": "B3SA3", "name": "B3 ON", "market": "B3"},
-    {"ticker": "PRIO3", "name": "PetroRio ON", "market": "B3"},
-    {"ticker": "SUZB3", "name": "Suzano ON", "market": "B3"},
-    {"ticker": "GGBR4", "name": "Gerdau PN", "market": "B3"},
-    {"ticker": "PETR3", "name": "Petrobras ON", "market": "B3"},
-    {"ticker": "EQTL3", "name": "Equatorial ON", "market": "B3"},
-    {"ticker": "TAEE11", "name": "Taesa Units", "market": "B3"},
-    {"ticker": "ITSA4", "name": "Itaúsa PN", "market": "B3"},
-    {"ticker": "CMIG4", "name": "Cemig PN", "market": "B3"},
-    {"ticker": "RENT3", "name": "Localiza ON", "market": "B3"},
-    {"ticker": "LREN3", "name": "Lojas Renner ON", "market": "B3"},
-    {"ticker": "SANB11", "name": "Santander Units", "market": "B3"},
-    {"ticker": "BRFS3", "name": "BRF ON", "market": "B3"},
-    {"ticker": "JBSS3", "name": "JBS ON", "market": "B3"},
-    {"ticker": "ASAI3", "name": "Assaí ON", "market": "B3"},
     {"ticker": "PETR4.SA", "name": "Petrobras PN", "market": "B3"},
     {"ticker": "VALE3.SA", "name": "Vale ON", "market": "B3"},
     {"ticker": "BBAS3.SA", "name": "Banco do Brasil ON", "market": "B3"},
@@ -71,6 +51,78 @@ CURATED: list[dict] = [
 ]
 
 BR_SUFFIX = ("3", "4", "5", "6", "11")
+
+
+def _no_accent(value: str) -> str:
+    norm = unicodedata.normalize("NFKD", value)
+    return "".join(ch for ch in norm if not unicodedata.combining(ch)).upper()
+
+
+def _load_b3_index() -> list[dict]:
+    """Load the local B3 ticker catalog (brapi-derived, no FIIs)."""
+    try:
+        path = Path(__file__).resolve().parents[1] / "data" / "b3_tickers.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover
+        logger.warning("could not load B3 index: %s", exc)
+        return []
+    kept = []
+    for item in data:
+        name = item.get("name") or ""
+        nn = _no_accent(name)
+        if "FUNDO DE INVESTIMENTO" in nn:
+            continue
+        if "FIC " in nn or " FIC" in nn or "FIC " in name:
+            continue
+        if "FUNDOS INCENTIVADOS" in nn:
+            continue
+        tk = (item.get("ticker") or "").strip().upper()
+        if tk.endswith(".SA"):
+            tk = tk[:-3]
+        if tk.endswith("F") or tk.startswith("$"):
+            continue
+        kept.append(item)
+    return kept
+
+
+B3_INDEX: list[dict] = _load_b3_index()
+
+
+def _base_code(ticker: str) -> str:
+    tk = ticker.upper()
+    if tk.endswith(".SA"):
+        tk = tk[:-3]
+    return tk
+
+
+def _rank_key(ticker: str) -> tuple:
+    """Liquidity-ish order: PN(4) > ON(3) > Units(11) > 5/6 > BDR(34) > rest."""
+    tk = _base_code(ticker)
+    if len(tk) == 7 and tk.endswith("34"):
+        return (6, tk)
+    suffix = tk[-2:] if tk[-2:] == "11" else tk[-1]
+    order = {"4": 0, "3": 1, "11": 2, "5": 3, "6": 4}
+    return (order.get(suffix, 5), tk)
+
+
+def _match_priority(q: str, ticker: str, name: str) -> int | None:
+    """Lower = better. Ticker intent beats name intent; exact beats substring."""
+    code = _base_code(ticker).upper()
+    nn = _no_accent(name)
+    if code == q:
+        return 0
+    if q.startswith(code):
+        return 1
+    if len(q) >= 3 and code.startswith(q):
+        return 2
+    tokens = nn.split()
+    if tokens and tokens[0] == q:
+        return 3
+    if nn.startswith(q):
+        return 4
+    if q in nn:
+        return 5
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -165,39 +217,86 @@ def dividends_history(ticker: str) -> pd.Series:
 
 
 def search(query: str, limit: int = 8) -> list[dict]:
-    q = query.strip().upper()
+    q = query.strip()
     if not q:
         return []
-    hits = [
-        {
-            "ticker": c["ticker"],
-            "name": c["name"],
-            "market": c["market"],
-        }
-        for c in CURATED
-        if q in c["ticker"].upper() or q in c["name"].upper()
-    ]
-    hits = hits[:limit]
-    if hits or settings.mock_mode:
-        return hits
+    nq = _no_accent(q)
+    hits: list[dict] = []
 
+    def add(ticker: str, name: str) -> None:
+        if any(h["ticker"] == ticker for h in hits):
+            return
+        hits.append(
+            {
+                "ticker": ticker,
+                "name": name,
+                "market": "B3" if ticker.endswith(".SA") else "Internacional",
+            }
+        )
+
+    def sort_hits(items: list[dict]) -> list[dict]:
+        dedup: dict[str, dict] = {}
+        for c in items:
+            name = c["name"]
+            key = _no_accent(name)
+            existing = dedup.get(key)
+            if existing is None or _rank_key(c["ticker"]) < _rank_key(existing["ticker"]):
+                dedup[key] = c
+        ranked = sorted(
+            dedup.values(),
+            key=lambda c: (
+                _match_priority(nq, c["ticker"], c["name"]) or 9,
+                _rank_key(c["ticker"]),
+            ),
+        )
+        return ranked
+
+    # 1) Exact ticker match.
+    exact = [
+        c
+        for c in B3_INDEX + CURATED
+        if _base_code(c["ticker"]).upper() == nq or c["ticker"].upper() == nq
+    ]
+    for c in sort_hits(exact):
+        add(c["ticker"], c["name"])
+    if hits:
+        return hits[:limit]
+
+    # 2) Local B3 catalog by ticker prefix or company name (accent-insensitive).
+    local = [
+        c
+        for c in B3_INDEX
+        if _match_priority(nq, c["ticker"], c["name"]) is not None
+    ]
+    for c in sort_hits(local):
+        add(c["ticker"], c["name"])
+        if len(hits) >= limit:
+            break
+    if len(hits) >= limit:
+        return hits[:limit]
+
+    # 3) Curated list (indexes + international anchors).
+    curated = [
+        c
+        for c in CURATED
+        if _match_priority(nq, c["ticker"], c["name"]) is not None
+    ]
+    for c in sort_hits(curated):
+        add(c["ticker"], c["name"])
+    if hits or settings.mock_mode:
+        return hits[:limit]
+
+    # 4) Yahoo fallback (international symbols / long names).
     try:
         results = yf.Search(q, max_results=limit)
         for quote in results.quotes or []:
             sym = quote.get("symbol", "")
             if not sym:
                 continue
-            hits.append(
-                {
-                    "ticker": sym,
-                    "name": quote.get("longname") or quote.get("shortname") or sym,
-                    "market": "B3" if sym.endswith(".SA") else "Internacional",
-                }
-            )
-        return hits
+            add(sym, quote.get("longname") or quote.get("shortname") or sym)
     except Exception as exc:  # pragma: no cover
         logger.warning("Search failed for %r: %s", q, exc)
-        return hits
+    return hits[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +313,9 @@ def _fetch_candles(ticker: str, period: str, interval: str) -> pd.DataFrame:
             df.columns = ["open", "high", "low", "close", "volume"]
             df.index = pd.to_datetime(df.index)
             df = df[~df.index.duplicated(keep="last")].sort_index()
-            return df
+            df = df.dropna(subset=["open", "high", "low", "close"])
+            if len(df):
+                return df
     except Exception as exc:
         logger.warning("yfinance candles failed for %s: %s", ticker, exc)
     return _mock_candles(ticker)
@@ -225,9 +326,14 @@ def _fetch_meta(ticker: str) -> dict:
         return _mock_meta(ticker)
     try:
         info = yf.Ticker(ticker).fast_info
+        name = info.get("shortName") or ticker
+        if name == ticker:
+            name = next(
+                (c["name"] for c in B3_INDEX + CURATED if c["ticker"] == ticker), ticker
+            )
         return {
             "ticker": ticker,
-            "name": info.get("shortName") or ticker,
+            "name": name,
             "currency": info.get("currency") or currency_of(ticker),
             "market": market_of(ticker),
             "price": float(info.get("last_price") or 0.0),
@@ -402,7 +508,9 @@ TAPE_TTL_SECONDS = 45
 
 
 def _quote_item(ticker: str, price: float, prev: float) -> dict:
-    name = next((c["name"] for c in CURATED if c["ticker"] == ticker), ticker)
+    name = next(
+        (c["name"] for c in B3_INDEX + CURATED if c["ticker"] == ticker), ticker
+    )
     return {
         "ticker": ticker,
         "name": name,

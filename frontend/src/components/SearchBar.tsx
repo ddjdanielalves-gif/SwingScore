@@ -35,12 +35,20 @@ export default function SearchBar({ onSelect }: Props) {
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
-  const submit = () => {
+  const submit = async () => {
     const q = query.trim();
     if (!q) return;
     const upper = q.toUpperCase();
-    const exact = results.find((r) => r.ticker.toUpperCase() === upper);
-    const pick = exact?.ticker ?? results[0]?.ticker ?? upper;
+    let pool = results;
+    if (!pool.length) {
+      try {
+        pool = await api.search(q);
+      } catch {
+        pool = [];
+      }
+    }
+    const exact = pool.find((r) => r.ticker.toUpperCase() === upper);
+    const pick = exact?.ticker ?? pool[0]?.ticker ?? upper;
     onSelect(pick);
     setOpen(false);
     setQuery("");

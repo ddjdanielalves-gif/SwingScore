@@ -52,6 +52,10 @@ async def run(ticker: str, db: Session, force_refresh: bool = False) -> Analysis
     scoring = scoring_service.compute(fund, tech, macro_data, market=meta.get("market", "B3"))
 
     price = float(df["close"].iloc[-1])
+    if price != price or price <= 0:  # NaN / zero guard
+        price = float(df["close"].dropna().iloc[-1])
+    if price != price or price <= 0:
+        price = 1.0
     final_prices = probability_service.simulate(df, scoring["swing_score"])
     scenarios = probability_service.scenario_probabilities(scoring["swing_score"], final_prices, price)
     fair_lo, fair_hi = probability_service.fair_value(fund_raw, price)

@@ -10,6 +10,8 @@ The macro score is one of the three pillars (25% weight) of the SwingScore.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 import httpx
 import pandas as pd
@@ -18,6 +20,10 @@ from ..config import settings
 from . import market_data
 
 logger = logging.getLogger("swing.macro")
+
+MACRO_CACHE: dict[str, tuple[float, dict]] = {}
+MACRO_LOCK = threading.Lock()
+MACRO_TTL_SECONDS = 45 * 60
 
 BCB_URLS = {
     "selic": "https://api.bcb.gov.br/dados/serie/bcdata.sgs.432/dados/ultimos/12?formato=json",
@@ -84,7 +90,7 @@ def _mock_bcb() -> dict:
     }
 
 
-def collect() -> dict:
+def _fetch_all() -> dict:
     bcb = _fetch_bcb() if not settings.mock_mode else _mock_bcb()
     if not bcb:
         bcb = _mock_bcb()
@@ -102,6 +108,18 @@ def collect() -> dict:
         "oil": oil,
         "is_demo": settings.mock_mode,
     }
+
+
+def collect() -> dict:
+    """Macro snapshot with a short TTL (macro data does not change intraday)."""
+    with MACRO_LOCK:
+        item = MACRO_CACHE.get("macro")
+        if item is not None and time.time() - item[0] < MACRO_TTL_SECONDS:
+            return item[1]
+    data = _fetch_all()
+    with MACRO_LOCK:
+        MACRO_CACHE["macro"] = (time.time(), data)
+    return data
 
 
 def score(macro: dict, market: str = "B3") -> dict:
