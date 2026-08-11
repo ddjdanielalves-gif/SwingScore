@@ -369,71 +369,90 @@ def search(query: str, limit: int = 8) -> list[dict]:
 
 # ---------------------------------------------------------------------------
 # Yahoo Finance / mock fetching
+#
+# Policy: synthetic data is ONLY produced when SWING_MOCK_MODE is enabled.
+# In production a Yahoo failure surfaces as MarketDataUnavailable so the app
+# never presents fabricated prices or fundamentals as real data.
 # ---------------------------------------------------------------------------
+
+class MarketDataUnavailable(Exception):
+    """Raised when live Yahoo data cannot be obtained (no synthetic fallback)."""
+
+
+def _yf_call(fn, attempts: int = 3, base_delay: float = 0.7):
+    """Run a Yahoo call with retries/backoff; raise MarketDataUnavailable."""
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - any Yahoo error is retriable
+            last = exc
+            if i < attempts - 1:
+                time.sleep(base_delay * (i + 1))
+    raise MarketDataUnavailable(f"Yahoo Finance indisponível: {last}") from last
+
 
 def _fetch_candles(ticker: str, period: str, interval: str) -> pd.DataFrame:
     if settings.mock_mode:
         return _mock_candles(ticker)
-    try:
-        hist = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=True)
-        if hist is not None and len(hist):
-            df = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
-            df.columns = ["open", "high", "low", "close", "volume"]
-            df.index = pd.to_datetime(df.index)
-            df = df[~df.index.duplicated(keep="last")].sort_index()
-            df = df.dropna(subset=["open", "high", "low", "close"])
-            if len(df):
-                return df
-    except Exception as exc:
-        logger.warning("yfinance candles failed for %s: %s", ticker, exc)
-    return _mock_candles(ticker)
+    hist = _yf_call(
+        lambda: yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=True)
+    )
+    if hist is not None and len(hist):
+        df = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
+        df.columns = ["open", "high", "low", "close", "volume"]
+        df.index = pd.to_datetime(df.index)
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        df = df.dropna(subset=["open", "high", "low", "close"])
+        if len(df):
+            return df
+    raise MarketDataUnavailable(f"Sem histórico de preços para {ticker}")
 
 
 def _fetch_meta(ticker: str) -> dict:
     if settings.mock_mode:
         return _mock_meta(ticker)
-    try:
-        info = yf.Ticker(ticker).fast_info
-        name = info.get("shortName") or ticker
-        if name == ticker:
-            name = next(
-                (c["name"] for c in B3_INDEX + CURATED if c["ticker"] == ticker), ticker
-            )
-        return {
-            "ticker": ticker,
-            "name": name,
-            "currency": info.get("currency") or currency_of(ticker),
-            "market": market_of(ticker),
-            "price": float(info.get("last_price") or 0.0),
-            "previous_close": float(info.get("previous_close") or 0.0),
-        }
-    except Exception as exc:
-        logger.warning("yfinance meta failed for %s: %s", ticker, exc)
-    meta = _mock_meta(ticker)
-    return meta
+    info = _yf_call(lambda: yf.Ticker(ticker).fast_info)
+    name = info.get("shortName") or ticker
+    if name == ticker:
+        name = next(
+            (c["name"] for c in B3_INDEX + CURATED if c["ticker"] == ticker), ticker
+        )
+    return {
+        "ticker": ticker,
+        "name": name,
+        "currency": info.get("currency") or currency_of(ticker),
+        "market": market_of(ticker),
+        "price": float(info.get("last_price") or 0.0),
+        "previous_close": float(info.get("previous_close") or 0.0),
+    }
 
 
 def _fetch_info(ticker: str) -> dict:
     if settings.mock_mode:
         return _mock_info(ticker)
     try:
-        info = yf.Ticker(ticker).info or {}
-        return {k: v for k, v in info.items() if not isinstance(v, (dict, list))}
-    except Exception as exc:
+        info = _yf_call(lambda: yf.Ticker(ticker).info or {})
+    except MarketDataUnavailable as exc:
         logger.warning("yfinance info failed for %s: %s", ticker, exc)
-    return _mock_info(ticker)
+        return {}
+    clean = {k: v for k, v in info.items() if not isinstance(v, (dict, list))}
+    if not any(v is not None for v in clean.values()):
+        logger.warning("yfinance info returned no data for %s", ticker)
+        return {}
+    return clean
 
 
 def _fetch_dividends(ticker: str) -> pd.Series:
     if settings.mock_mode:
         return _mock_dividends(ticker)
     try:
-        divs = yf.Ticker(ticker).dividends
+        divs = _yf_call(lambda: yf.Ticker(ticker).dividends)
         if divs is not None and len(divs):
             return divs
-    except Exception as exc:
+    except MarketDataUnavailable as exc:
         logger.warning("yfinance dividends failed for %s: %s", ticker, exc)
-    return _mock_dividends(ticker)
+    return pd.Series(dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -542,20 +561,18 @@ def batch_candles(tickers: list[str], period: str = "6mo", interval: str = "1d")
         out = pd.DataFrame(closes, index=idx)
         return out
     try:
-        data = yf.download(tickers, period=period, interval=interval, auto_adjust=True, progress=False)
+        data = _yf_call(
+            lambda: yf.download(tickers, period=period, interval=interval, auto_adjust=True, progress=False),
+            attempts=2,
+            base_delay=0.5,
+        )
         if isinstance(data, pd.DataFrame) and "Close" in data.columns:
             if isinstance(data["Close"], pd.DataFrame):
                 return data["Close"]
             return data[["Close"]].rename(columns={"Close": tickers[0]})
     except Exception as exc:
         logger.warning("batch download failed: %s", exc)
-    closes = {}
-    for t in tickers:
-        try:
-            closes[t] = _mock_candles(t)["close"]
-        except Exception:
-            continue
-    return pd.DataFrame(closes)
+    raise MarketDataUnavailable(f"Sem cotações para {tickers}")
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +615,11 @@ def _fetch_quotes(tickers: list[str]) -> list[dict]:
             out.append(_quote_item(t, price, prev))
         return out
     try:
-        data = yf.download(tickers, period="5d", interval="1d", auto_adjust=True, progress=False)
+        data = _yf_call(
+            lambda: yf.download(tickers, period="5d", interval="1d", auto_adjust=True, progress=False),
+            attempts=2,
+            base_delay=0.5,
+        )
         if data is None or len(data) == 0:
             raise ValueError("empty download")
         if isinstance(data.columns, pd.MultiIndex):
@@ -619,8 +640,8 @@ def _fetch_quotes(tickers: list[str]) -> list[dict]:
             return out
     except Exception as exc:
         logger.warning("quotes download failed: %s", exc)
-    # Fallback: mock quotes so the tape is never empty.
-    return [_quote_item(t, float(_mock_candles(t)["close"].iloc[-1]), float(_mock_candles(t)["close"].iloc[-2])) for t in tickers]
+    # Production: never fabricate quotes; the tape stays empty until Yahoo recovers.
+    return []
 
 
 def quotes(tickers: list[str] | None = None) -> list[dict]:

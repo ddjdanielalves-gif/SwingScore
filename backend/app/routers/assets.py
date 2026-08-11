@@ -44,7 +44,11 @@ async def get_analysis(
         snapshot = await analysis_service.run(resolved, db, force_refresh=refresh)
     except Exception as exc:
         logger.exception("Analysis failed for %s", resolved)
-        raise HTTPException(status_code=502, detail=f"Não foi possível analisar {resolved}: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Não foi possível obter dados reais do Yahoo para {resolved}. "
+            "Tente novamente em instantes.",
+        ) from exc
 
     df = market_data.candles(resolved)
     ma_series = {}

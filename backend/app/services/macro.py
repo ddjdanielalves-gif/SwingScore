@@ -92,7 +92,7 @@ def _mock_bcb() -> dict:
 
 def _fetch_all() -> dict:
     bcb = _fetch_bcb() if not settings.mock_mode else _mock_bcb()
-    if not bcb:
+    if settings.mock_mode and not bcb:
         bcb = _mock_bcb()
 
     usd, ibov, spx, vix, oil = _momentums(["USDBRL=X", "^BVSP", "^GSPC", "^VIX", "CL=F"]).values()

@@ -33,6 +33,17 @@ async def run(ticker: str, db: Session, force_refresh: bool = False) -> Analysis
         if today is not None:
             return today
 
+    try:
+        return await _build(ticker, db)
+    except market_data.MarketDataUnavailable:
+        # A single Yahoo blip (rate limit / cold start) must not kill the
+        # request: wait briefly and try once more before surfacing the error.
+        logger.warning("Yahoo unavailable for %s; retrying analysis...", ticker)
+        await asyncio.sleep(2)
+        return await _build(ticker, db)
+
+
+async def _build(ticker: str, db: Session) -> AnalysisSnapshot:
     # Fetch all external data concurrently (yfinance calls are blocking).
     meta, df, info, fund_history = await asyncio.gather(
         asyncio.to_thread(market_data.asset_meta, ticker),
@@ -90,7 +101,13 @@ async def run(ticker: str, db: Session, force_refresh: bool = False) -> Analysis
         is_demo=used_mock,
     )
     db.add(snapshot)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("Commit failed for %s (%s); retrying once", ticker, exc)
+        db.rollback()
+        db.add(snapshot)
+        db.commit()
     db.refresh(snapshot)
     logger.info("Analysis persisted for %s (score %.1f)", ticker, snapshot.swing_score)
     return snapshot

@@ -64,7 +64,7 @@ def collect(info: dict, currency: str) -> dict:
     if pe and price:
         eps = price / pe
 
-    sector = (info.get("sector") or info.get("industry") or "Demonstração").strip()
+    sector = (info.get("sector") or info.get("industry") or "Não informado").strip()
     ref = SECTOR_REFERENCE.get(sector, SECTOR_REFERENCE["Demonstração"])
 
     dy = _num(info.get("dividendYield"))
