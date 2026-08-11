@@ -253,7 +253,10 @@ def asset_info(ticker: str) -> dict:
     if cached is not None:
         return cached
     info = _fetch_info(ticker)
-    _cache_set(key, info)
+    if info:
+        # Never cache a failed/empty fetch: a transient Yahoo blip must not
+        # poison the cache for the whole TTL.
+        _cache_set(key, info)
     return info
 
 
@@ -263,7 +266,8 @@ def dividends_history(ticker: str) -> pd.Series:
     if cached is not None:
         return pd.Series(cached)
     series = _fetch_dividends(ticker)
-    _cache_set(key, series.to_dict())
+    if len(series):
+        _cache_set(key, series.to_dict())
     return series
 
 

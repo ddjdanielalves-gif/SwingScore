@@ -54,6 +54,16 @@ async def _build(ticker: str, db: Session) -> AnalysisSnapshot:
 
     fund_raw = fundamentals_service.collect(info, meta.get("currency", "USD"))
     fund_raw["history"] = fund_history
+    # If quoteSummary (info) is flaky, fill the key multiples from the real
+    # 5-year financial-statement history instead of leaving them blank.
+    if fund_raw.get("pe") is None and fund_history.get("pe_5y"):
+        fund_raw["pe"] = fund_history["pe_5y"]
+    if fund_raw.get("pvp") is None and fund_history.get("pvp_5y"):
+        fund_raw["pvp"] = fund_history["pvp_5y"]
+    if fund_raw.get("roe") is None and fund_history.get("roe_5y"):
+        fund_raw["roe"] = fund_history["roe_5y"]
+    if fund_raw.get("dividend_yield") is None and fund_history.get("dy_5y"):
+        fund_raw["dividend_yield"] = round(fund_history["dy_5y"] * 100, 2)
     fund = fundamentals_service.score(fund_raw)
     tech = indicators.compute(df)
     macro_data = await asyncio.to_thread(macro_service.collect)
