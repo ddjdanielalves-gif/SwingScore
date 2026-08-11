@@ -144,22 +144,43 @@ def _b3_like(t: str) -> bool:
     )
 
 
+def _known_b3_code(code: str) -> bool:
+    """True when <code>.SA is in the local B3 catalog (PETR4, TAEE11, ...)."""
+    target = f"{code}.SA"
+    return any(c["ticker"] == target for c in B3_INDEX + CURATED)
+
+
+def _b3_resolve(code: str) -> str:
+    """Resolve a B3-looking code, checking the local catalog first."""
+    candidate = f"{code}.SA"
+    if _known_b3_code(code):
+        return candidate
+    # Unknown code: try smart resolution (catches typos like MELI3 -> MELI34).
+    try:
+        for h in search(code, limit=5):
+            if h["ticker"].endswith(".SA"):
+                return h["ticker"]
+    except Exception as exc:  # pragma: no cover
+        logger.warning("B3 resolution failed for %r: %s", code, exc)
+    return candidate
+
+
 def resolve_ticker(raw: str) -> str:
     t = raw.strip().upper().replace(" ", "")
     if "." in t:
         # Some Yahoo BR artifacts use BBAS3.F; treat as the B3 code.
         if t.endswith(".F") and _b3_like(t[:-2]):
-            return f"{t[:-2]}.SA"
+            return _b3_resolve(t[:-2])
         return t
     if t.startswith("^"):
         return t
     # Strip trailing "F" sometimes seen on B3 codes (BBAS3F -> BBAS3).
     base = t[:-1] if len(t) > 1 and t.endswith("F") else t
     if base != t and _b3_like(base):
-        return f"{base}.SA"
+        return _b3_resolve(base)
     # B3 codes look like PETR4, VALE3, BBAS3, TAEE11, SANB11...
     if _b3_like(t):
-        return f"{t}.SA"
+        return _b3_resolve(t)
     # Not a code: try company-name resolution ("banco do brasil", "vale", ...).
     name_query = raw.strip().upper()
     try:
@@ -264,7 +285,8 @@ def search(query: str, limit: int = 8) -> list[dict]:
             }
         )
 
-    def sort_hits(items: list[dict]) -> list[dict]:
+    def sort_hits(items: list[dict], match_q: str | None = None) -> list[dict]:
+        mq = match_q or nq
         dedup: dict[str, dict] = {}
         for c in items:
             name = c["name"]
@@ -275,7 +297,7 @@ def search(query: str, limit: int = 8) -> list[dict]:
         ranked = sorted(
             dedup.values(),
             key=lambda c: (
-                _match_priority(nq, c["ticker"], c["name"]) or 9,
+                _match_priority(mq, c["ticker"], c["name"]) or 9,
                 _rank_key(c["ticker"]),
             ),
         )
@@ -315,6 +337,22 @@ def search(query: str, limit: int = 8) -> list[dict]:
         add(c["ticker"], c["name"])
     if hits or settings.mock_mode:
         return hits[:limit]
+
+    # 3b) Typo tolerance: drop trailing characters ("ambeve" -> "ambev").
+    for probe in (nq[:-1], nq[:-2]):
+        if len(probe) < 3:
+            break
+        fuzzy = [
+            c
+            for c in B3_INDEX + CURATED
+            if _match_priority(probe, c["ticker"], c["name"]) is not None
+        ]
+        for c in sort_hits(fuzzy, match_q=probe):
+            add(c["ticker"], c["name"])
+            if len(hits) >= limit:
+                break
+        if hits:
+            return hits[:limit]
 
     # 4) Yahoo fallback (international symbols / long names).
     try:
