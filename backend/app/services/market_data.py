@@ -98,7 +98,7 @@ def _base_code(ticker: str) -> str:
 def _rank_key(ticker: str) -> tuple:
     """Liquidity-ish order: PN(4) > ON(3) > Units(11) > 5/6 > BDR(34) > rest."""
     tk = _base_code(ticker)
-    if len(tk) == 7 and tk.endswith("34"):
+    if len(tk) in (6, 7) and tk.endswith("34"):
         return (6, tk)
     suffix = tk[-2:] if tk[-2:] == "11" else tk[-1]
     order = {"4": 0, "3": 1, "11": 2, "5": 3, "6": 4}
@@ -122,6 +122,11 @@ def _match_priority(q: str, ticker: str, name: str) -> int | None:
         return 4
     if q in nn:
         return 5
+    # Allow "SANTANDER BR" to match "BANCO SANTANDER (BRASIL)".
+    nn_clean = nn.replace("(", " ").replace(")", " ").replace("-", " ")
+    q_clean = q.replace("-", " ")
+    if q_clean in " ".join(nn_clean.split()):
+        return 5
     return None
 
 
@@ -129,15 +134,40 @@ def _match_priority(q: str, ticker: str, name: str) -> int | None:
 # Ticker normalization
 # ---------------------------------------------------------------------------
 
+def _b3_like(t: str) -> bool:
+    """Looks like a B3 code: PETR4, VALE3, BBAS3, TAEE11, SANB11, MELI34..."""
+    return (
+        len(t) <= 7
+        and t.isalnum()
+        and not t.isdigit()
+        and t.endswith(BR_SUFFIX)
+    )
+
+
 def resolve_ticker(raw: str) -> str:
     t = raw.strip().upper().replace(" ", "")
     if "." in t:
+        # Some Yahoo BR artifacts use BBAS3.F; treat as the B3 code.
+        if t.endswith(".F") and _b3_like(t[:-2]):
+            return f"{t[:-2]}.SA"
         return t
     if t.startswith("^"):
         return t
+    # Strip trailing "F" sometimes seen on B3 codes (BBAS3F -> BBAS3).
+    base = t[:-1] if len(t) > 1 and t.endswith("F") else t
+    if base != t and _b3_like(base):
+        return f"{base}.SA"
     # B3 codes look like PETR4, VALE3, BBAS3, TAEE11, SANB11...
-    if len(t) <= 7 and t.isalnum() and not t.isdigit() and t.endswith(("3", "4", "5", "6", "11")):
+    if _b3_like(t):
         return f"{t}.SA"
+    # Not a code: try company-name resolution ("banco do brasil", "vale", ...).
+    name_query = raw.strip().upper()
+    try:
+        hits = search(name_query, limit=1)
+        if hits:
+            return hits[0]["ticker"]
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Name resolution failed for %r: %s", raw, exc)
     return t
 
 
