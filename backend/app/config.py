@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # platform works fully offline. Every response is flagged as demo data.
     mock_mode: bool = False
 
+    # brapi.dev token (https://brapi.dev). Used as a real-data fallback for
+    # B3 quotes/fundamentals when Yahoo Finance is unavailable or rate-limited.
+    brapi_token: str = ""
+
     # CORS origins for the web frontend.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

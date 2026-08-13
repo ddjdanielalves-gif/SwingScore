@@ -18,6 +18,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -241,7 +242,15 @@ def asset_meta(ticker: str) -> dict:
     cached = _cache_get(key)
     if cached is not None:
         return cached
-    meta = _fetch_meta(ticker)
+    try:
+        meta = _fetch_meta(ticker)
+        if float(meta.get("price") or 0.0) <= 0.0:
+            raise MarketDataUnavailable(f"Meta vazia para {ticker}")
+    except MarketDataUnavailable:
+        if _b3_like(_base_code(ticker)):
+            meta = _brapi_meta(ticker)
+        else:
+            raise
     _cache_set(key, meta)
     return meta
 
@@ -253,6 +262,9 @@ def asset_info(ticker: str) -> dict:
     if cached is not None:
         return cached
     info = _fetch_info(ticker)
+    if not info and _b3_like(_base_code(ticker)):
+        info = _brapi_info(ticker)
+        logger.warning("info %s: Yahoo falhou, usando dados reais da brapi", ticker)
     if info:
         # Never cache a failed/empty fetch: a transient Yahoo blip must not
         # poison the cache for the whole TTL.
@@ -394,6 +406,75 @@ def _yf_call(fn, attempts: int = 3, base_delay: float = 0.7):
             if i < attempts - 1:
                 time.sleep(base_delay * (i + 1))
     raise MarketDataUnavailable(f"Yahoo Finance indisponível: {last}") from last
+
+
+BRAPI_BASE = "https://brapi.dev/api"
+BRAPI_TIMEOUT = 15.0
+
+
+def _brapi_quote(code: str) -> dict | None:
+    """Real B3 quote from brapi.dev. Best-effort; returns None when the
+    provider is not configured or the call fails."""
+    token = settings.brapi_token
+    if not token:
+        return None
+    try:
+        resp = httpx.get(
+            f"{BRAPI_BASE}/quote/{code}",
+            params={"token": token, "fundamentals": "true"},
+            timeout=BRAPI_TIMEOUT,
+        )
+        resp.raise_for_status()
+        results = (resp.json() or {}).get("results") or []
+        if not results:
+            logger.warning("brapi sem resultado para %s", code)
+            return None
+        return results[0]
+    except Exception as exc:  # noqa: BLE001 - brapi is best-effort fallback
+        logger.warning("brapi quote %s falhou: %s", code, exc)
+        return None
+
+
+def _brapi_meta(ticker: str) -> dict:
+    """Meta real da brapi quando o Yahoo falha (somente B3)."""
+    code = _base_code(ticker)
+    r = _brapi_quote(code)
+    if not r:
+        raise MarketDataUnavailable(f"Sem dados para {ticker} (Yahoo e brapi indisponíveis)")
+    price = float(r.get("regularMarketPrice") or 0.0)
+    name = r.get("longName") or r.get("shortName") or code
+    if name == code:
+        name = next(
+            (c["name"] for c in B3_INDEX + CURATED if c["ticker"] == ticker), ticker
+        )
+    return {
+        "ticker": ticker,
+        "name": name,
+        "currency": r.get("currency") or "BRL",
+        "market": "B3",
+        "price": price,
+        "previous_close": float(r.get("regularMarketPreviousClose") or price),
+    }
+
+
+def _brapi_info(ticker: str) -> dict:
+    """Info fundamental mínima da brapi (P/L real) quando o Yahoo falha."""
+    code = _base_code(ticker)
+    r = _brapi_quote(code)
+    if not r:
+        return {}
+    return {
+        "shortName": r.get("shortName") or code,
+        "longName": r.get("longName") or code,
+        "trailingPE": r.get("priceEarnings"),
+        "earningsPerShare": r.get("earningsPerShare"),
+        "currentPrice": r.get("regularMarketPrice"),
+        "regularMarketPrice": r.get("regularMarketPrice"),
+        "marketCap": r.get("marketCap"),
+        "currency": r.get("currency") or "BRL",
+        "fiftyTwoWeekLow": r.get("fiftyTwoWeekLow"),
+        "fiftyTwoWeekHigh": r.get("fiftyTwoWeekHigh"),
+    }
 
 
 def _fetch_candles(ticker: str, period: str, interval: str) -> pd.DataFrame:
